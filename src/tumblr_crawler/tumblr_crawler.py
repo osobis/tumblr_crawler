@@ -3,11 +3,11 @@ from __future__ import with_statement
 import tumblr
 import threading
 import time
-import os
 import sys
 import ConfigParser
 import logging
 import urllib2
+import os
 from cutils import get_from_config
 from urlparse import urlparse
     
@@ -30,7 +30,7 @@ class TumblrImageCrawler(threading.Thread):
     def run(self):
         start = 0
         while True:
-            self.__log.info('Starting with: %d; max: %d', start, self.__max)
+            self.__log.info('Starting with: %d; max: %d for name: %r', start, self.__max, self.__name)
             results = self.__api.read(start = start, max = self.__max)
             count = 0
             photo_data = dict()
@@ -50,12 +50,12 @@ class TumblrImageCrawler(threading.Thread):
                 else:
                     self.__log.warning('Result: %r not a dict', result)
             if count == 0:
-                self.__log.info('No more results')
+                self.__log.info('No more results for name: %r', self.__name)
                 break
             with PHOTO_DATA_LOCK:              
                 self.__photo_data.update(photo_data)
             start += self.__max
-            self.__log.info('Sleeping a bit..')
+            self.__log.info('Sleeping for name: %r', self.__name)
             time.sleep(0.5)
             
 
@@ -73,8 +73,12 @@ class TumblrService(object):
         self.__me__pasword = get_from_config(self.__config, 'TUMBLR', 'me_password')
         self.__me_mail = get_from_config(self.__config, 'TUMBLR', 'me_email')
         self.__me_max = get_from_config(self.__config, 'TUMBLR', 'me_max')
+        self.__acounts = [item.strip() for item in get_from_config(self.__config, 'TUMBLR', 'accounts').split(',')]
+        self.__save_to_dir = get_from_config(self.__config, 'TUMBLR', 'save_to_dir')
         self.__photo_data = dict()
-        self.__image_crawler = TumblrImageCrawler(photo_data=self.__photo_data, name = 'maximusboi')
+        self.__image_crawlers = list()
+        for account in self.__acounts:
+            self.__image_crawlers.append(TumblrImageCrawler(photo_data=self.__photo_data, name = account, max = self.__me_max))
         self.__log.info('I am: %r', self.__class__.__name__)
         
     def __get_logging(self):
@@ -84,6 +88,7 @@ class TumblrService(object):
         self.__log = logging.getLogger(self.__class__.__name__)
         
     def __process_photo_data(self):
+        self.__log.info('Start processing and downloading photos')
         result_dict = dict()
         for caption, photo_dict in self.__photo_data.items():
             sizes = photo_dict.keys()
@@ -97,9 +102,11 @@ class TumblrService(object):
     
     def __save_photo(self, url):
         file_name = urlparse(url).path.strip('/')
-        url_pointer = urllib2.urlopen(url)
-        file('/Users/skocle/Documents/photos/%s' % file_name, 'wb').write(url_pointer.read())
-        self.__log.info('URL: %r saved', url)
+        if file_name.endswith('.jpg') or file_name.endswith('.gif') or file_name.endswith('.png'):
+            url_pointer = urllib2.urlopen(url)
+            photo_path = os.path.join(self.__save_to_dir, file_name)
+            file(photo_path, 'wb').write(url_pointer.read())
+            self.__log.info('URL: %r saved to %r', url, photo_path)
             
         
     def __repr__(self):
@@ -107,13 +114,14 @@ class TumblrService(object):
         
         
     def run(self): 
-        self.__image_crawler.start()
-        self.__image_crawler.join()
-        
-        for key, value in self.__process_photo_data().items():
-            print ("Caption: %s" % key)
-            print ("URLs: %r" % value)
-            print ('='*40)
+        self.__log.info('Start running crawlers..')
+        for thread in self.__image_crawlers:
+            thread.start()
+        for thread in self.__image_crawlers:
+            thread.join()
+        self.__log.info('Finished collecting data')
+        self.__log.info('Collected %d items to photo process', len(self.__photo_data))
+        for value in self.__process_photo_data().values():
             urls = value.values()
             if urls:
                 self.__save_photo(urls[0])
