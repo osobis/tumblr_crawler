@@ -30,31 +30,38 @@ class TumblrImageCrawler(threading.Thread):
     def run(self):
         start = 0
         while True:
-            self.__log.info('Starting with: %d; max: %d for name: %r', start, self.__max, self.__name)
-            results = self.__api.read(start = start, max = self.__max)
-            count = 0
-            photo_data = dict()
-            for result in results:
-                count += 1
-                if isinstance(result, dict):
-                    photo_caption = result.get('photo-caption')
-                    if photo_caption:
-                        photo_data[photo_caption] = dict()
-                        for key in result.keys():
-                            if key.startswith('photo-url-'):
-                                try:
-                                    new_key = int(key.split('photo-url-')[-1])
-                                    photo_data[photo_caption][new_key] = result[key]
-                                except ValueError:
-                                    self.__log.warning('Ooops! Strange photo-url key: %r', key)
-                else:
-                    self.__log.warning('Result: %r not a dict', result)
-            if count == 0:
-                self.__log.info('No more results for name: %r', self.__name)
-                break
-            with PHOTO_DATA_LOCK:              
-                self.__photo_data.update(photo_data)
-            start += self.__max
+            try:
+                self.__log.info('Starting with: %d; max: %d for name: %r', start, self.__max, self.__name)
+                results = self.__api.read(start = start, max = self.__max)
+                count = 0
+                photo_data = dict()
+                for result in results:
+                    count += 1
+                    if isinstance(result, dict):
+                        photo_caption = result.get('photo-caption')
+                        if photo_caption:
+                            photo_data[photo_caption] = dict()
+                            for key in result.keys():
+                                if key.startswith('photo-url-'):
+                                    try:
+                                        new_key = int(key.split('photo-url-')[-1])
+                                        photo_data[photo_caption][new_key] = result[key]
+                                    except ValueError:
+                                        self.__log.warning('Ooops! Strange photo-url key: %r', key)
+                    else:
+                        self.__log.warning('Result: %r not a dict', result)
+                        
+                if count == 0:
+                    self.__log.info('No more results for name: %r', self.__name)
+                    break
+                
+                with PHOTO_DATA_LOCK:       
+                    self.__log.debug('Updating photo_data for name: %r', self.__name)       
+                    self.__photo_data.update(photo_data)
+                start += self.__max
+            except StandardError, error:
+                self.__log.error('Error: %r', error)
+                
             self.__log.info('Sleeping for name: %r', self.__name)
             time.sleep(0.5)
             
@@ -103,11 +110,15 @@ class TumblrService(object):
     def __save_photo(self, caption, url):
         file_name = urlparse(url).path.strip('/')
         if file_name.endswith('.jpg') or file_name.endswith('.gif') or file_name.endswith('.png'):
-            url_pointer = urllib2.urlopen(url)
-            photo_path = os.path.join(self.__save_to_dir, file_name)
-            file(photo_path, 'wb').write(url_pointer.read())
-            self.__log.info('URL: %r saved to %r', url, photo_path)
-            
+            try:
+                url_pointer = urllib2.urlopen(url)
+                photo_path = os.path.join(self.__save_to_dir, file_name)
+                file(photo_path, 'wb').write(url_pointer.read())
+                self.__log.info('URL: %r saved to %r', url, photo_path)
+                return True
+            except StandardError, error:
+                self.__log.error('Error saving photo: %r. Error: %r', url, error)
+        return False  
         
     def __repr__(self):
         return "%r" % self.__dict__
@@ -121,10 +132,13 @@ class TumblrService(object):
             thread.join()
         self.__log.info('Finished collecting data')
         self.__log.info('Collected %d items to photo process', len(self.__photo_data))
+        count_saved = 0
         for caption, url_dict in self.__process_photo_data().items():
             urls = url_dict.values()
             if urls:
-                self.__save_photo(caption, urls[0])
+                if self.__save_photo(caption, urls[0]):
+                    count_saved += 1
+        self.__log.info('Saved %d photos', count_saved)
           
             
             
