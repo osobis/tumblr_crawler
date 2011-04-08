@@ -100,7 +100,7 @@ class TumblrService(object):
                 self.__log.warning('Strange! No photos found for caption: %r', caption)
         return result_dict
     
-    def __save_photo(self, url):
+    def __save_photo(self, caption, url):
         file_name = urlparse(url).path.strip('/')
         if file_name.endswith('.jpg') or file_name.endswith('.gif') or file_name.endswith('.png'):
             url_pointer = urllib2.urlopen(url)
@@ -121,10 +121,10 @@ class TumblrService(object):
             thread.join()
         self.__log.info('Finished collecting data')
         self.__log.info('Collected %d items to photo process', len(self.__photo_data))
-        for value in self.__process_photo_data().values():
-            urls = value.values()
+        for caption, url_dict in self.__process_photo_data().items():
+            urls = url_dict.values()
             if urls:
-                self.__save_photo(urls[0])
+                self.__save_photo(caption, urls[0])
           
             
             
@@ -132,7 +132,6 @@ def main(config_file_path):
     
     tumblr_service = TumblrService(config_file_path)
     tumblr_service.run()
-    
     
             
 if __name__ == '__main__':
