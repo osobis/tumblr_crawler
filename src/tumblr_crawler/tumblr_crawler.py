@@ -14,6 +14,27 @@ from urlparse import urlparse
     
 CONTEXT_LOCK = threading.Lock()
 QUEUE_MAX_SIZE = 50
+
+
+class PhotoObject(object):
+    
+    def __init__(self, owner, caption, **kwargs):
+        
+        self.owner = owner
+        self.caption = caption
+        self.url = None
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        self.__prev_key = -1
+            
+    def set_url(self, key, url):
+        if key > self.__prev_key:
+            self.url = url
+            self.__prev_key = key
+            
+    def __repr__(self):
+        return '%r' % self.__dict__
+            
     
 class TumblrImageCrawler(threading.Thread):
     """Crawls for images under given name account"""
@@ -37,20 +58,21 @@ class TumblrImageCrawler(threading.Thread):
         @params: results interator from tumblr.api
         @returns: photo_data as dict, count as total number of results
         """
-        photo_data = dict()
+        photo_data = list()
         count = 0
         for result in results:
             if isinstance(result, dict):
                 photo_caption = result.get('photo-caption')
                 if photo_caption:
-                    photo_data[photo_caption] = dict()
+                    photo_obj = PhotoObject(owner = self.__name, caption = photo_caption)
                     for key in result.keys():
                         if key.startswith('photo-url-'):
                             try:
                                 new_key = int(key.split('photo-url-')[-1])
-                                photo_data[photo_caption][new_key] = result[key]
+                                photo_obj.set_url(new_key, result[key])
                             except ValueError:
                                 self.__log.warning('Ooops! Strange photo-url key: %r', key)
+                    photo_data.append(photo_obj)
             else:
                 self.__log.warning('Result: %r not a dict', result)
             count += 1
@@ -91,6 +113,7 @@ class TumblrImageCrawler(threading.Thread):
      
             
 class PhotoSaveThread(threading.Thread):
+    """Thread to save photos to the specified folder"""
     
     def __init__(self, config, task_queue, context):
         
@@ -101,29 +124,30 @@ class PhotoSaveThread(threading.Thread):
         self.__save_to_dir = get_from_config(self.__config, 'TUMBLR', 'save_to_dir')
         threading.Thread.__init__(self)
         
-    def __process_photo_data(self, photo_data):
-        result_dict = dict()
-        for caption, photo_dict in photo_data.items():
-            sizes = photo_dict.keys()
-            sizes.sort(reverse=True)
-            if sizes:
-                photo_dict[sizes[0]]
-                result_dict[caption] = {sizes[0]: photo_dict[sizes[0]]}
-            else:
-                self.__log.warning('Strange! No photos found for caption: %r', caption)
-        return result_dict
+    def __get_or_create_dir(self, owner):
+        path = os.path.join(self.__save_to_dir, owner)
+        if os.path.isdir(path):
+            return path
+        else:
+            os.makedirs(path)
+            return path
     
-    def __save_photo(self, caption, url):
-        file_name = urlparse(url).path.strip('/')
+    def __save_photo(self, photo_obj):
+        
+        if not photo_obj.url:
+            self.__log.warning('Missing URL for photo: %r, owner: %r', photo_obj.caption, photo_obj.owner)
+            return False
+        
+        file_name = urlparse(photo_obj.url).path.strip('/')
         if file_name.endswith('.jpg') or file_name.endswith('.gif') or file_name.endswith('.png'):
             try:
-                url_pointer = urllib2.urlopen(url)
-                photo_path = os.path.join(self.__save_to_dir, file_name)
+                url_pointer = urllib2.urlopen(photo_obj.url)
+                photo_path = os.path.join(self.__get_or_create_dir(photo_obj.owner), file_name)
                 file(photo_path, 'wb').write(url_pointer.read())
-                self.__log.info('URL: %r saved to %r', url, photo_path)
+                self.__log.info('URL: %r saved to %r', photo_obj.url, photo_path)
                 return True
             except StandardError, error:
-                self.__log.error('Error saving photo: %r. Error: %r', url, error)
+                self.__log.error('Error saving photo: %r. Error: %r', photo_obj.url, error)
         return False  
         
     def run(self):
@@ -137,11 +161,9 @@ class PhotoSaveThread(threading.Thread):
                     photo_data = self.__task_queue.get(block=True, timeout=5)
                     self.__log.info('Received %d photo_data from the timeout queue', len(photo_data))
                     
-                for caption, url_dict in self.__process_photo_data(photo_data).items():
-                    urls = url_dict.values()
-                    if urls:
-                        if self.__save_photo(caption, urls[0]):
-                            count_saved += 1
+                for photo_obj in photo_data:
+                    if self.__save_photo(photo_obj):
+                        count_saved += 1
                 self.__task_queue.task_done()
             except Queue.Empty:
                 with CONTEXT_LOCK:
