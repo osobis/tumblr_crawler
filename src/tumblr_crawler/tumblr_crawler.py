@@ -13,8 +13,10 @@ from cutils import get_from_config
 from urlparse import urlparse
     
 CONTEXT_LOCK = threading.Lock()
+QUEUE_MAX_SIZE = 50
     
 class TumblrImageCrawler(threading.Thread):
+    """Crawls for images under given name account"""
     
     def __init__(self, name, task_queue, context,  email = None, password = None, tags = None, max=50, limit=0):
         
@@ -31,7 +33,10 @@ class TumblrImageCrawler(threading.Thread):
         threading.Thread.__init__(self)
         
     def __process_search_results(self, results):
-        
+        """
+        @params: results interator from tumblr.api
+        @returns: photo_data as dict, count as total number of results
+        """
         photo_data = dict()
         count = 0
         for result in results:
@@ -52,6 +57,7 @@ class TumblrImageCrawler(threading.Thread):
         return photo_data, count                
         
     def run(self):
+        """Run method"""
         start = 0
         while True:
             try:
@@ -65,7 +71,7 @@ class TumblrImageCrawler(threading.Thread):
                        
                 if photo_data:      
                     self.__log.debug('Putting photo_data on the queue for name: %r', self.__name) 
-                    self.__task_queue.put_nowait(photo_data)
+                    self.__task_queue.put(photo_data, block=True)
                                 
                 start += self.__max
                 
@@ -159,7 +165,7 @@ class TumblrService(object):
         self.__acounts = [item.strip() for item in get_from_config(self.__config, 'TUMBLR', 'accounts').split(',')]
         self.__limit = get_from_config(self.__config, 'TUMBLR', 'limit', 0)
         self.__context = {'count_done_crawler': 0}
-        self.__task_queue = Queue.Queue(0)
+        self.__task_queue = Queue.Queue(QUEUE_MAX_SIZE)
         self.__image_crawlers = list()
         for account in self.__acounts:
             self.__image_crawlers.append(TumblrImageCrawler(task_queue = self.__task_queue, 
