@@ -121,16 +121,17 @@ class PhotoSaveThread(threading.Thread):
         self.__log = logging.getLogger(self.__class__.__name__)
         self.__task_queue = task_queue
         self.__context = context
-        self.__save_to_dir = get_from_config(self.__config, 'TUMBLR', 'save_to_dir')
+        self.__create_owners_dir_mapping()
         threading.Thread.__init__(self)
         
-    def __get_or_create_dir(self, owner):
-        path = os.path.join(self.__save_to_dir, owner)
-        if os.path.isdir(path):
-            return path
-        else:
-            os.makedirs(path)
-            return path
+    def __create_owners_dir_mapping(self):
+        
+        self.__dir_mapping = dict()
+        for owner in self.__context['owners']:
+            path = os.path.join(get_from_config(self.__config, 'TUMBLR', 'save_to_dir') , owner)
+            if not os.path.isdir(path):
+                os.makedirs(path)
+            self.__dir_mapping[owner] = path
     
     def __save_photo(self, photo_obj):
         
@@ -142,25 +143,33 @@ class PhotoSaveThread(threading.Thread):
         if file_name.endswith('.jpg') or file_name.endswith('.gif') or file_name.endswith('.png'):
             try:
                 url_pointer = urllib2.urlopen(photo_obj.url)
-                photo_path = os.path.join(self.__get_or_create_dir(photo_obj.owner), file_name)
+                photo_path = os.path.join(self.__dir_mapping[photo_obj.owner], file_name)
                 file(photo_path, 'wb').write(url_pointer.read())
                 self.__log.info('URL: %r saved to %r', photo_obj.url, photo_path)
                 return True
             except StandardError, error:
                 self.__log.error('Error saving photo: %r. Error: %r', photo_obj.url, error)
         return False  
+    
+    def __get_queue_task(self):
+        """
+        Get the task from the queue, block.
+        If crawlers have stopped it means that no more tasks will be pushed to the queue
+        the exception Queue.Empty is raised
+        """
+        if not self.__context.get('crawlers_stopped', False):
+            photo_data = self.__task_queue.get(block=True)
+            self.__log.info('Received %d photo_data from the queue', len(photo_data))
+        else:
+            photo_data = self.__task_queue.get(block=True, timeout=5)
+            self.__log.info('Received %d photo_data from the timeout queue', len(photo_data))
+        return photo_data
         
     def run(self):
         count_saved = 0
         while True:
             try:
-                if not self.__context.get('crawlers_stopped', False):
-                    photo_data = self.__task_queue.get(block=True)
-                    self.__log.info('Received %d photo_data from the queue', len(photo_data))
-                else:
-                    photo_data = self.__task_queue.get(block=True, timeout=5)
-                    self.__log.info('Received %d photo_data from the timeout queue', len(photo_data))
-                    
+                photo_data = self.__get_queue_task()
                 for photo_obj in photo_data:
                     if self.__save_photo(photo_obj):
                         count_saved += 1
@@ -186,7 +195,7 @@ class TumblrService(object):
         self.__me_max = get_from_config(self.__config, 'TUMBLR', 'me_max')
         self.__acounts = [item.strip() for item in get_from_config(self.__config, 'TUMBLR', 'accounts').split(',')]
         self.__limit = get_from_config(self.__config, 'TUMBLR', 'limit', 0)
-        self.__context = {'count_done_crawler': 0}
+        self.__context = {'count_done_crawler': 0, 'owners': self.__acounts}
         self.__task_queue = Queue.Queue(QUEUE_MAX_SIZE)
         self.__image_crawlers = list()
         for account in self.__acounts:
@@ -203,7 +212,6 @@ class TumblrService(object):
         logging.basicConfig(level = getattr(logging, self.__config.get('TUMBLR', 'logging_level')),
                             format = '%(asctime)s [%(name)-12s] %(levelname)-8s %(message)s')
         self.__log = logging.getLogger(self.__class__.__name__)
-        
         
     def __repr__(self):
         return "%r" % self.__dict__
