@@ -242,9 +242,9 @@ class TumblrService(object):
         sys.exit(0)
            
             
-def main(config_file_path):
+def main():
     
-    tumblr_service = TumblrService(config_file_path)
+    tumblr_service = TumblrService(sys.argv[1])
     tumblr_service.run()
     
             
@@ -253,5 +253,5 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print ("usage: python tumblr_crawler.py <config>")
     else:
-        main(sys.argv[1])
+        main()
             
