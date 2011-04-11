@@ -13,7 +13,7 @@ from cutils import get_from_config
 from urlparse import urlparse
     
 CONTEXT_LOCK = threading.Lock()
-QUEUE_MAX_SIZE = 50
+QUEUE_MAX_SIZE = 5
 
 
 class PhotoObject(object):
@@ -39,11 +39,10 @@ class PhotoObject(object):
 class TumblrImageCrawler(threading.Thread):
     """Crawls for images under given name account"""
     
-    def __init__(self, name, task_queue, context,  email = None, password = None, tags = None, max=50, limit=0):
+    def __init__(self, name, task_queue, email = None, password = None, tags = None, max=50, limit=0):
         
         self.__log = logging.getLogger(self.__class__.__name__)
         self.__task_queue = task_queue
-        self.__context = context
         self.__name = name
         self.__email = email
         self.__password = password
@@ -106,10 +105,7 @@ class TumblrImageCrawler(threading.Thread):
                 self.__log.error('Error: %r', error)
                 
             self.__log.info('Sleeping for name: %r', self.__name)
-            time.sleep(0.2)
-            
-        with CONTEXT_LOCK:
-            self.__context['count_done_crawler'] += 1
+            time.sleep(0.1)
      
             
 class PhotoSaveThread(threading.Thread):
@@ -144,42 +140,33 @@ class PhotoSaveThread(threading.Thread):
             try:
                 url_pointer = urllib2.urlopen(photo_obj.url)
                 photo_path = os.path.join(self.__dir_mapping[photo_obj.owner], file_name)
-                file(photo_path, 'wb').write(url_pointer.read())
-                self.__log.info('URL: %r saved to %r', photo_obj.url, photo_path)
-                return True
+                if not os.path.exists(photo_path):
+                    file(photo_path, 'wb').write(url_pointer.read())
+                    self.__log.info('URL: %r saved to %r', photo_obj.url, photo_path)
+                    return True
+                else:
+                    self.__log.info('Photo already exits: %r', photo_path)
             except StandardError, error:
                 self.__log.error('Error saving photo: %r. Error: %r', photo_obj.url, error)
         return False  
     
-    def __get_queue_task(self):
-        """
-        Get the task from the queue, block.
-        If crawlers have stopped it means that no more tasks will be pushed to the queue
-        the exception Queue.Empty is raised
-        """
-        if not self.__context.get('crawlers_stopped', False):
-            photo_data = self.__task_queue.get(block=True)
-            self.__log.info('Received %d photo_data from the queue', len(photo_data))
-        else:
-            photo_data = self.__task_queue.get(block=True, timeout=5)
-            self.__log.info('Received %d photo_data from the timeout queue', len(photo_data))
-        return photo_data
+    def __are_image_crawlers_dead(self):
+        return True not in [item.isAlive() for item in self.__context['image_crawlers']]
         
     def run(self):
         count_saved = 0
         while True:
             try:
-                photo_data = self.__get_queue_task()
+                photo_data = self.__task_queue.get(block=True, timeout=5)
                 for photo_obj in photo_data:
                     if self.__save_photo(photo_obj):
                         count_saved += 1
                 self.__task_queue.task_done()
+                self.__log.info('Saved %d photos so far', count_saved)
             except Queue.Empty:
-                with CONTEXT_LOCK:
-                    self.__context['saving_done'] = True
+                if self.__are_image_crawlers_dead():
                     break
-            self.__log.info('Saved %d photos so far', count_saved)
-            
+        self.__log.debug('Stopped: %r', self.__class__.__name__)
     
 class TumblrService(object):
     
@@ -195,15 +182,15 @@ class TumblrService(object):
         self.__me_max = get_from_config(self.__config, 'TUMBLR', 'me_max')
         self.__acounts = [item.strip() for item in get_from_config(self.__config, 'TUMBLR', 'accounts').split(',')]
         self.__limit = get_from_config(self.__config, 'TUMBLR', 'limit', 0)
-        self.__context = {'count_done_crawler': 0, 'owners': self.__acounts}
+        self.__context = {'owners': self.__acounts}
         self.__task_queue = Queue.Queue(QUEUE_MAX_SIZE)
         self.__image_crawlers = list()
         for account in self.__acounts:
             self.__image_crawlers.append(TumblrImageCrawler(task_queue = self.__task_queue, 
-                                                            context = self.__context,
                                                             name = account, 
                                                             max = self.__me_max, 
                                                             limit = self.__limit))
+        self.__context['image_crawlers'] = self.__image_crawlers
         self.__save_thread = PhotoSaveThread(self.__config, self.__task_queue, self.__context)
         self.__log.info('I am: %r', self.__class__.__name__)
         
@@ -212,6 +199,9 @@ class TumblrService(object):
         logging.basicConfig(level = getattr(logging, self.__config.get('TUMBLR', 'logging_level')),
                             format = '%(asctime)s [%(name)-12s] %(levelname)-8s %(message)s')
         self.__log = logging.getLogger(self.__class__.__name__)
+        
+    def __are_image_crawlers_dead(self):
+        return True not in [item.isAlive() for item in self.__image_crawlers]
         
     def __repr__(self):
         return "%r" % self.__dict__
@@ -226,16 +216,10 @@ class TumblrService(object):
         self.__save_thread.start()
         
         while True:
-            self.__log.info('Context: %r', self.__context)
-            with CONTEXT_LOCK:
-                if  self.__context.get('count_done_crawler') >= len(self.__acounts):
-                    self.__context['crawlers_stopped'] = True
-                    queue_length = self.__task_queue.qsize()
-                    self.__log.info('Queue size: %d', queue_length)
-                    if queue_length == 0:
-                        if self.__context.get('saving_done', False):
-                            self.__log.info('Saving done.')
-                            break
+            self.__log.info('Context: %r', self.__context)       
+            if not self.__save_thread.isAlive():
+                break
+            self.__log.info('Queue size: %d', self.__task_queue.qsize()) 
             time.sleep(1)
                   
         self.__log.info('All Done.')  

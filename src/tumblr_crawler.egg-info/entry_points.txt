@@ -1,0 +1,4 @@
+
+          [console_scripts]
+          tumblr_crawler = tumblr_crawler.tumblr_crawler:main
+        
