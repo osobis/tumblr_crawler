@@ -13,7 +13,7 @@ from cutils import get_from_config
 from urlparse import urlparse
     
 CONTEXT_LOCK = threading.Lock()
-QUEUE_MAX_SIZE = 5
+QUEUE_MAX_SIZE = 50
 
 
 class PhotoObject(object):
@@ -55,7 +55,7 @@ class TumblrImageCrawler(threading.Thread):
     def __process_search_results(self, results):
         """
         @params: results interator from tumblr.api
-        @returns: photo_data as dict, count as total number of results
+        @return: photo_data as dict, count as total number of results
         """
         photo_data = list()
         count = 0
